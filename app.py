@@ -30,6 +30,7 @@ DATA_DIR = os.environ.get("DATA_DIR", "/data")
 LANG_TAG = os.environ.get("LANG_TAG", "CZECH")
 MIN_MB = int(os.environ.get("MIN_MB", "150"))
 MAX_GB = int(os.environ.get("MAX_GB", "40"))
+MAX_MBPS = float(os.environ.get("MAX_MBPS", "0"))  # download speed cap in MB/s, 0 = unlimited
 VIDEO_EXT = {"mkv", "mp4", "avi", "m4v", "ts", "wmv", "mov", "mpg", "mpeg"}
 INCOMPLETE = os.path.join(DOWNLOAD_DIR, ".incomplete")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
@@ -369,6 +370,10 @@ def run_job(j):
                 fh.write(chunk)
                 done += len(chunk)
                 j["done"] = done
+                if MAX_MBPS:
+                    ahead = (done - base) / (MAX_MBPS * 1048576) - (time.time() - t0)
+                    if ahead > 0:
+                        time.sleep(ahead)
                 j["speed"] = (done - base) / max(time.time() - t0, 1)
                 if time.time() - last_save > 15:
                     save_state()
@@ -555,6 +560,7 @@ def health():
 
 
 if __name__ == "__main__":
+    os.umask(0o002)  # group-writable, matches the arr containers (UMASK=002)
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(INCOMPLETE, exist_ok=True)
     load_state()
