@@ -1,0 +1,4 @@
+flask==3.0.3
+waitress==3.0.0
+requests==2.32.3
+passlib==1.7.4

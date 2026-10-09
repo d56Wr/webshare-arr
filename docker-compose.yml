@@ -1,0 +1,16 @@
+services:
+  webshare-arr:
+    build: .
+    image: webshare-arr:local
+    container_name: webshare-arr
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      - PORT=9710
+      - DOWNLOAD_DIR=/mnt/alldrives/Downloads/webshare
+      - DATA_DIR=/data
+      - TZ=Europe/Prague
+    volumes:
+      - ./data:/data
+      - /mnt/alldrives:/mnt/alldrives
