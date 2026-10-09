@@ -127,10 +127,15 @@ def guess_quality(size):
     return "2160p WEBRip"
 
 
-def release_title(name, size):
+YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def release_title(name, size, year=None):
     base = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name).strip()
     base = re.sub(r"[\\/:*?\"<>|]", " ", base)
     base = re.sub(r"\s+", " ", base)
+    if year and not YEAR_RE.search(base):
+        base += f" {year}"  # Radarr cannot parse a movie release (and so cannot import it) without a year
     if not QUALITY_RE.search(base):
         base += " " + guess_quality(size)
     if LANG_TAG and LANG_TAG.lower() not in base.lower():
@@ -283,6 +288,8 @@ def newznab():
         return err(202, "No such function")
     q = (request.args.get("q") or "").replace("+", " ").strip()
     is_tv = t == "tvsearch" or request.args.get("cat", "").startswith("5")
+    ym = YEAR_RE.search(q)
+    year = ym.group(0) if ym else None
     items = []
     if q:
         found = find_releases(q, request.args.get("season"), request.args.get("ep"))
@@ -290,7 +297,7 @@ def newznab():
         found = [dict(f, score=0) for f in ws_search("cz 1080p") if usable(f)][:20]
     if True:
         for f in found:
-            title = release_title(f["name"], f["size"])
+            title = release_title(f["name"], f["size"], None if is_tv else year)
             link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
             cat = category_for(f, is_tv)
             items.append(
