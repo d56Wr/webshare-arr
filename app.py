@@ -30,6 +30,7 @@ DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/downloads")
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 MIN_MB = int(os.environ.get("MIN_MB", "150"))
 MAX_GB = int(os.environ.get("MAX_GB", "40"))
+TMDB_TOKEN = os.environ.get("TMDB_TOKEN", "")
 MAX_MBPS = float(os.environ.get("MAX_MBPS", "0"))  # download speed cap in MB/s, 0 = unlimited
 VIDEO_EXT = {"mkv", "mp4", "avi", "m4v", "ts", "wmv", "mov", "mpg", "mpeg"}
 INCOMPLETE = os.path.join(DOWNLOAD_DIR, ".incomplete")
@@ -344,6 +345,24 @@ SEASON_RE = re.compile(r"\b(?:rada|serie|season|sezona|series)[ ._-]*(\d{1,2})\b
 EP_EXPLICIT_RE = re.compile(r"(?:\b(?:e|ep|epizoda|episode|dil|part)[ ._-]?(\d{1,3})\b|\b(\d{1,3})[ ._-]*(?:dil|epizoda|episode)\b)", re.I)
 
 
+def tmdb_tv_titles(tmdbid):
+    """Czech/Slovak names of a series from TMDB (translations + alternative titles for CZ/SK). Empty when no token is set."""
+    if not TMDB_TOKEN or not tmdbid:
+        return []
+    out = []
+    hdr = {"Authorization": f"Bearer {TMDB_TOKEN}"}
+    try:
+        r = http.get(f"https://api.themoviedb.org/3/tv/{tmdbid}/translations", headers=hdr, timeout=20)
+        r.raise_for_status()
+        out += [t["data"].get("name") for t in r.json().get("translations", []) if t.get("iso_639_1") in ("cs", "sk")]
+        r = http.get(f"https://api.themoviedb.org/3/tv/{tmdbid}/alternative_titles", headers=hdr, timeout=20)
+        r.raise_for_status()
+        out += [t.get("title") for t in r.json().get("results", []) if t.get("iso_3166_1") in ("CZ", "SK")]
+    except (requests.RequestException, ValueError) as e:
+        print("tmdb error", tmdbid, e, flush=True)
+    return [t for t in dict.fromkeys(out) if t]
+
+
 def tv_meta(tvdbid):
     hit = _tv_cache.get(tvdbid)
     if hit and time.time() - hit[0] < 86400:
@@ -353,7 +372,7 @@ def tv_meta(tvdbid):
         r.raise_for_status()
         d = r.json()
         alts = [a.get("title") if isinstance(a, dict) else a for a in d.get("alternativeTitles") or []]
-        meta = {"title": d["title"], "alts": [a for a in alts if a][:6], "tvdbid": str(tvdbid),
+        meta = {"title": d["title"], "alts": [a for a in alts if a][:6], "tvdbid": str(tvdbid), "cs_sk": tmdb_tv_titles(d.get("tmdbId")),
                 "episodes": {(e["seasonNumber"], e["episodeNumber"]) for e in d.get("episodes", [])}}
     except (requests.RequestException, ValueError, KeyError) as e:
         print("tv metadata error", tvdbid, e, flush=True)
@@ -460,13 +479,13 @@ def newznab():
     items = []
     if tvmeta:
         found = []
-        for f in find_releases(q, titles=[tvmeta["title"]] + aliases("tv", tvmeta["tvdbid"]), tv=True, limit=300):
+        for f in find_releases(q, titles=list(dict.fromkeys([tvmeta["title"]] + tvmeta["cs_sk"] + aliases("tv", tvmeta["tvdbid"]))), tv=True, limit=300):
             se = guess_episode(f["name"], tvmeta)
             if not se or (want_s and se[0] != int(want_s)) or (want_e and se[1] != int(want_e)):
                 continue
             episode_of[f["ident"]] = se
             found.append(f)
-        print(f"tv {tvmeta['title']!r} s={want_s} e={want_e}: {len(found)} releases with a certain episode", flush=True)
+        print(f"tv {tvmeta['title']!r} (cs/sk: {tvmeta['cs_sk']}) s={want_s} e={want_e}: {len(found)} releases with a certain episode", flush=True)
     elif meta:
         year = str(meta.get("Year") or year or "") or None
         found = find_releases(q, titles=meta_titles(meta) + aliases("movie", meta.get("TmdbId")), year=year)
