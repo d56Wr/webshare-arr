@@ -17,6 +17,7 @@ from email.utils import format_datetime
 from xml.sax.saxutils import escape, quoteattr
 
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, Response, jsonify, request
 from passlib.hash import md5_crypt
 
@@ -27,7 +28,6 @@ API_KEY = os.environ["API_KEY"]
 PORT = int(os.environ.get("PORT", "9710"))
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/downloads")
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
-LANG_TAG = os.environ.get("LANG_TAG", "CZECH")
 MIN_MB = int(os.environ.get("MIN_MB", "150"))
 MAX_GB = int(os.environ.get("MAX_GB", "40"))
 MAX_MBPS = float(os.environ.get("MAX_MBPS", "0"))  # download speed cap in MB/s, 0 = unlimited
@@ -130,6 +130,21 @@ def guess_quality(size):
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
+CZ_RE = re.compile(r"\b(cz|cze|czech|cesky|ceske|cesk\w*|dabing\w*|dab|cs)\b", re.I)
+SK_RE = re.compile(r"\b(sk|slovak|slovensky|slovensk\w*|svk)\b", re.I)
+SUB_RE = re.compile(r"\b(tit|titulky|titulek|sub|subs|subtitles|hardsub)\b", re.I)
+
+
+def lang_tag(name):
+    """Token Radarr/Sonarr understand (CZ / SK) when the file name claims Czech/Slovak audio; subtitles alone do not count."""
+    n = fold(name).replace("_", " ").replace(".", " ")
+    if SUB_RE.search(n) and not re.search(r"\b(dab|dabing\w*)\b", n, re.I):
+        return ""
+    if SK_RE.search(n) and not CZ_RE.search(n):
+        return "SK"
+    return "CZ" if CZ_RE.search(n) else ""
+
+
 def release_title(name, size, year=None):
     base = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name).strip()
     base = re.sub(r"[\\/:*?\"<>|]", " ", base)
@@ -138,8 +153,9 @@ def release_title(name, size, year=None):
         base += f" {year}"  # Radarr cannot parse a movie release (and so cannot import it) without a year
     if not QUALITY_RE.search(base):
         base += " " + guess_quality(size)
-    if LANG_TAG and LANG_TAG.lower() not in base.lower():
-        base += " " + LANG_TAG
+    tag = lang_tag(name)
+    if tag and not re.search(rf"\b{tag}\b", base, re.I):
+        base += " " + tag
     return base
 
 
@@ -201,19 +217,28 @@ def score(f, q):
     return max(0, min(100, round(s)))
 
 
-def find_releases(q, season=None, ep=None):
-    queries = [q]
-    no_year = re.sub(r"[\s+]+(19|20)\d{2}$", "", q).strip()
-    for variant in (fold(q), no_year, fold(no_year)):
-        if variant and variant not in queries:
-            queries.append(variant)
+def find_releases(q, season=None, ep=None, titles=None, year=None):
+    """Search Webshare for one or more titles of the same work and score every hit against its best-matching title."""
+    if titles is None:
+        ym = YEAR_RE.search(q)
+        year = year or (ym.group(0) if ym else None)
+        titles = [re.sub(r"[\s+]+(?:19|20)\d{2}$", "", q).strip()]
+    queries = []
+    for t in titles:
+        for v in ((f"{t} {year}" if year else None), t):
+            for w in (v, fold(v) if v else None):
+                if w and w not in queries:
+                    queries.append(w)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        def run(query):
+            try:
+                return ws_search(query)
+            except requests.RequestException as e:
+                print("search error", query, e, flush=True)
+                return []
+        batches = list(pool.map(run, queries))
     seen, results = set(), []
-    for query in queries:
-        try:
-            files = ws_search(query)
-        except requests.RequestException as e:
-            print("search error", query, e, flush=True)
-            continue
+    for files in batches:
         for f in files:
             if f["ident"] in seen or not usable(f):
                 continue
@@ -221,15 +246,57 @@ def find_releases(q, season=None, ep=None):
                 m = EP_RE.search(f["name"])
                 if m and (int(m.group(1) or m.group(3)), int(m.group(2) or m.group(4))) != (int(season), int(ep)):
                     continue
-            f["score"] = score(f, q)
             seen.add(f["ident"])
+            best = max(((score(f, f"{t} {year}" if year else t), t) for t in titles), key=lambda x: x[0])
+            f["score"], f["matched_title"] = best
             if f["score"] >= MIN_SCORE:
                 results.append(f)
-        if len(results) >= 10:
-            break
     results.sort(key=lambda f: (f["score"], f["size"]), reverse=True)
-    print(f"search {q!r}: {len(results)} results, best {[(f['score'], f['name']) for f in results[:3]]}", flush=True)
+    print(f"search {titles!r} {year}: {len(results)} results from {len(queries)} queries, "
+          f"best {[(f['score'], f['name']) for f in results[:3]]}", flush=True)
     return results[:30]
+
+
+# --------------------------------------------------------------------------- movie metadata (Radarr's public metadata server)
+
+_meta_cache = {}
+META_URL = "https://api.radarr.video/v1/movie"
+TITLE_LANGS = ("cs-CZ", "sk-SK")
+
+
+def movie_meta(tmdbid=None, imdbid=None):
+    key = tmdbid or imdbid
+    hit = _meta_cache.get(key)
+    if hit and time.time() - hit[0] < 86400:
+        return hit[1]
+    url = f"{META_URL}/{tmdbid}" if tmdbid else f"{META_URL}/imdb/{imdbid}"
+    try:
+        r = http.get(url, timeout=20)
+        r.raise_for_status()
+        meta = r.json()
+        if isinstance(meta, list):
+            meta = meta[0] if meta else None
+    except (requests.RequestException, ValueError) as e:
+        print("metadata error", url, e, flush=True)
+        return hit[1] if hit else None
+    _meta_cache[key] = (time.time(), meta)
+    return meta
+
+
+def meta_titles(meta):
+    """Main title first, then Czech/Slovak translations, original title and alternative titles; each also without the ': subtitle'."""
+    cand = [meta.get("Title"), meta.get("OriginalTitle")]
+    cand += [t.get("Title") for t in meta.get("Translations", []) if t.get("Language") in TITLE_LANGS]
+    cand += [a.get("Title") for a in meta.get("AlternativeTitles", [])]
+    out = []
+    for t in cand:
+        if not t or not re.search(r"[A-Za-z\u00C0-\u024F]", t):
+            continue  # skip titles in non-latin scripts, Webshare names are latin
+        for v in (t, re.split(r"\s*[:\u2013\u2014]\s+", t)[0]):
+            v = v.strip()
+            if len(v) > 2 and fold(v).lower() not in {fold(o).lower() for o in out}:
+                out.append(v)
+    return out[:14]
 
 
 # --------------------------------------------------------------------------- Newznab
@@ -259,7 +326,7 @@ CAPS = """<?xml version="1.0" encoding="UTF-8"?>
 <caps><server title="Webshare"/><limits max="100" default="100"/>
 <searching><search available="yes" supportedParams="q"/>
 <tv-search available="yes" supportedParams="q,season,ep"/>
-<movie-search available="yes" supportedParams="q"/></searching>
+<movie-search available="yes" supportedParams="q,imdbid,tmdbid"/></searching>
 <categories>
 <category id="2000" name="Movies"><subcat id="2030" name="Movies/SD"/><subcat id="2040" name="Movies/HD"/><subcat id="2045" name="Movies/UHD"/></category>
 <category id="5000" name="TV"><subcat id="5030" name="TV/SD"/><subcat id="5040" name="TV/HD"/><subcat id="5045" name="TV/UHD"/></category>
@@ -290,14 +357,25 @@ def newznab():
     is_tv = t == "tvsearch" or request.args.get("cat", "").startswith("5")
     ym = YEAR_RE.search(q)
     year = ym.group(0) if ym else None
+    tmdbid, imdbid = request.args.get("tmdbid"), request.args.get("imdbid")
+    meta = None
+    if not is_tv and (tmdbid or imdbid):
+        meta = movie_meta(tmdbid if tmdbid and tmdbid != "0" else None, ("tt" + imdbid.lstrip("t")) if imdbid else None)
     items = []
-    if q:
+    if meta:
+        year = str(meta.get("Year") or year or "") or None
+        found = find_releases(q, titles=meta_titles(meta), year=year)
+    elif q:
         found = find_releases(q, request.args.get("season"), request.args.get("ep"))
     else:  # RSS-style probe (indexer test): a few generic recent-looking files
         found = [dict(f, score=0) for f in ws_search("cz 1080p") if usable(f)][:20]
     if True:
         for f in found:
             title = release_title(f["name"], f["size"], None if is_tv else year)
+            if meta and f.get("matched_title") and f["matched_title"] != meta.get("Title"):
+                # found under a translated title: name the release after Radarr's own title so it parses and matches the movie
+                tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
+                title = f"{safe(meta['Title'])} {year} {tags} {lang_tag(f['name'])}".strip()
             link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
             cat = category_for(f, is_tv)
             items.append(
