@@ -150,14 +150,31 @@ SK_RE = re.compile(r"\b(sk|slovak|slovensky|slovensk\w*|svk)\b", re.I)
 SUB_RE = re.compile(r"\b(tit|titulky|titulek|sub|subs|subtitles|hardsub)\b", re.I)
 
 
+OTHER_LANGS = {  # token Sonarr/Radarr understand -> words in a file name
+    "ENGLISH": r"(?:eng|en|english|anglicky)", "FRENCH": r"(?:fre|fra|french|francouzsky)",
+    "GERMAN": r"(?:ger|deu|german|nemecky)", "ITALIAN": r"(?:ita|italian|italsky)",
+    "SPANISH": r"(?:spa|spanish|spanelsky)", "RUSSIAN": r"(?:rus|russian|rusky)",
+    "JAPANESE": r"(?:jpn|japanese|japonsky)",
+}
+
+
 def lang_tag(name):
-    """Token Radarr/Sonarr understand (CZ / SK) when the file name claims Czech/Slovak audio; subtitles alone do not count."""
+    """Language tokens Radarr/Sonarr understand: CZ / SK when the file name claims Czech/Slovak audio (subtitles alone do not
+    count), plus the original language (e.g. "CZ ENGLISH") when the name also lists it, so a multi-audio file is recognised."""
     n = fold(name).replace("_", " ").replace(".", " ")
-    if SUB_RE.search(n) and not re.search(r"\b(dab|dabing\w*)\b", n, re.I):
-        return ""
-    if SK_RE.search(n) and not CZ_RE.search(n):
-        return "SK"
-    return "CZ" if CZ_RE.search(n) else ""
+    if SUB_RE.search(n):
+        if not re.search(r"\b(dab|dabing\w*)\b", n, re.I):
+            return ""
+        primary, extras = ("SK" if SK_RE.search(n) and not CZ_RE.search(n) else "CZ"), []
+    else:
+        if SK_RE.search(n) and not CZ_RE.search(n):
+            primary = "SK"
+        elif CZ_RE.search(n):
+            primary = "CZ"
+        else:
+            return ""
+        extras = [lang for lang, pat in OTHER_LANGS.items() if re.search(rf"\b{pat}\b", n, re.I)]
+    return " ".join([primary] + extras)
 
 
 def release_title(name, size, year=None):
@@ -168,9 +185,9 @@ def release_title(name, size, year=None):
         base += f" {year}"  # Radarr cannot parse a movie release (and so cannot import it) without a year
     if not QUALITY_RE.search(base):
         base += " " + guess_quality(size)
-    tag = lang_tag(name)
-    if tag and not re.search(rf"\b{tag}\b", base, re.I):
-        base += " " + tag
+    for part in lang_tag(name).split():
+        if not re.search(rf"\b{part}\b", base, re.I):
+            base += " " + part
     return base
 
 
