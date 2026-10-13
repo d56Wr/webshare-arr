@@ -196,7 +196,7 @@ CONTAINER_BONUS = {"mkv": 10, "mp4": 7, "m4v": 5, "avi": 3}
 
 
 def tokens(s):
-    return [t for t in re.split(r"[^a-z0-9]+", fold(s).lower()) if t]
+    return [t for t in re.split(r"[^a-z0-9]+", re.sub(r"['\u2019`]", "", fold(s).lower())) if t]
 
 
 def score(f, q, tv=False):
@@ -215,7 +215,7 @@ def score(f, q, tv=False):
     s = 50 * coverage
     # words that are neither in the query nor in the usual release noise suggest a different title ("Kolja 2", "Making of ...")
     extra = [t for t in nt if t not in qt and t not in NOISE and not t.isdigit() and not EP_RE.fullmatch(t)]
-    s -= min(10 if tv else 25, 5 * len(extra))
+    s -= min(5 if tv else 25, 5 * len(extra))  # episodes always carry an episode title / release group
     # title tokens should come first in the filename, not buried after other words
     if qt[0] in nt and nt.index(qt[0]) > 2:
         s -= 10
@@ -228,12 +228,15 @@ def score(f, q, tv=False):
         s += 10
     s += CONTAINER_BONUS.get((f["type"] or "").lower(), 0)
     gb = f["size"] / 1073741824
-    s += 10 if 0.7 <= gb <= 15 else 5 if 0.4 <= gb <= 30 else 0
+    if tv:
+        s += 10 if 0.15 <= gb <= 8 else 5 if gb <= 30 else 0  # an episode is far smaller than a film
+    else:
+        s += 10 if 0.7 <= gb <= 15 else 5 if 0.4 <= gb <= 30 else 0
     s += min(10, f["pos"]) - min(15, 3 * f["neg"])
     return max(0, min(100, round(s)))
 
 
-def find_releases(q, season=None, ep=None, titles=None, year=None, tv=False):
+def find_releases(q, season=None, ep=None, titles=None, year=None, tv=False, limit=30):
     """Search Webshare for one or more titles of the same work and score every hit against its best-matching title."""
     if titles is None:
         ym = YEAR_RE.search(q)
@@ -270,7 +273,25 @@ def find_releases(q, season=None, ep=None, titles=None, year=None, tv=False):
     results.sort(key=lambda f: (f["score"], f["size"]), reverse=True)
     print(f"search {titles!r} {year}: {len(results)} results from {len(queries)} queries, "
           f"best {[(f['score'], f['name']) for f in results[:3]]}", flush=True)
-    return results[:30]
+    return results[:limit]
+
+
+ALIASES_FILE = os.path.join(DATA_DIR, "aliases.json")
+_aliases = {"mtime": 0, "data": {}}
+
+
+def aliases(kind, ident):
+    """Hand-maintained extra titles, e.g. {"tv": {"74584": ["Gordon Ramsay Nocni mury kuchyne"]}, "movie": {"60672": [...]}}."""
+    try:
+        mt = os.path.getmtime(ALIASES_FILE)
+        if mt != _aliases["mtime"]:
+            with open(ALIASES_FILE) as fh:
+                _aliases["data"], _aliases["mtime"] = json.load(fh), mt
+    except (OSError, ValueError) as e:
+        if not isinstance(e, FileNotFoundError):
+            print("aliases.json unreadable:", e, flush=True)
+        return []
+    return [t for t in _aliases["data"].get(kind, {}).get(str(ident), []) if isinstance(t, str)]
 
 
 # --------------------------------------------------------------------------- movie metadata (Radarr's public metadata server)
@@ -331,7 +352,9 @@ def tv_meta(tvdbid):
         r = http.get(f"{SKYHOOK}/{tvdbid}", timeout=20)
         r.raise_for_status()
         d = r.json()
-        meta = {"title": d["title"], "episodes": {(e["seasonNumber"], e["episodeNumber"]) for e in d.get("episodes", [])}}
+        alts = [a.get("title") if isinstance(a, dict) else a for a in d.get("alternativeTitles") or []]
+        meta = {"title": d["title"], "alts": [a for a in alts if a][:6], "tvdbid": str(tvdbid),
+                "episodes": {(e["seasonNumber"], e["episodeNumber"]) for e in d.get("episodes", [])}}
     except (requests.RequestException, ValueError, KeyError) as e:
         print("tv metadata error", tvdbid, e, flush=True)
         return hit[1] if hit else None
@@ -437,7 +460,7 @@ def newznab():
     items = []
     if tvmeta:
         found = []
-        for f in find_releases(q, titles=[tvmeta["title"]], tv=True):
+        for f in find_releases(q, titles=[tvmeta["title"]] + aliases("tv", tvmeta["tvdbid"]), tv=True, limit=300):
             se = guess_episode(f["name"], tvmeta)
             if not se or (want_s and se[0] != int(want_s)) or (want_e and se[1] != int(want_e)):
                 continue
@@ -446,7 +469,7 @@ def newznab():
         print(f"tv {tvmeta['title']!r} s={want_s} e={want_e}: {len(found)} releases with a certain episode", flush=True)
     elif meta:
         year = str(meta.get("Year") or year or "") or None
-        found = find_releases(q, titles=meta_titles(meta), year=year)
+        found = find_releases(q, titles=meta_titles(meta) + aliases("movie", meta.get("TmdbId")), year=year)
     elif q:
         found = find_releases(q, request.args.get("season"), request.args.get("ep"))
     else:  # RSS-style probe (indexer test): a few generic recent-looking files
