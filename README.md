@@ -18,3 +18,6 @@ Series have no Czech/Slovak titles in the metadata Sonarr uses, so add them by h
 {"tv": {"74584": ["Gordon Ramsay Noční můry kuchyně"]}, "movie": {"60672": ["Purpurové řeky 2"]}}
 ```
 Movies get Czech/Slovak titles automatically from Radarr's metadata server.
+
+## TMDB (optional)
+Set `TMDB_TOKEN` (a TMDB "API Read Access Token") in `.env` to also search series under their Czech/Slovak TMDB names.
