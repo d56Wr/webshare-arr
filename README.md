@@ -21,3 +21,6 @@ Movies get Czech/Slovak titles automatically from Radarr's metadata server.
 
 ## TMDB (optional)
 Set `TMDB_TOKEN` (a TMDB "API Read Access Token") in `.env` to also search series under their Czech/Slovak TMDB names.
+
+## Rate limit
+All Webshare API calls go through one limiter (`WS_MIN_INTERVAL`, default 0.25 s) and search results are cached for 30 minutes, so bulk "search missing/upgrade" runs by Huntarr/Newtarr cannot hammer Webshare.

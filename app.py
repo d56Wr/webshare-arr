@@ -31,6 +31,7 @@ DATA_DIR = os.environ.get("DATA_DIR", "/data")
 MIN_MB = int(os.environ.get("MIN_MB", "150"))
 MAX_GB = int(os.environ.get("MAX_GB", "40"))
 TMDB_TOKEN = os.environ.get("TMDB_TOKEN", "")
+WS_MIN_INTERVAL = float(os.environ.get("WS_MIN_INTERVAL", "0.25"))  # seconds between Webshare API calls
 MAX_MBPS = float(os.environ.get("MAX_MBPS", "0"))  # download speed cap in MB/s, 0 = unlimited
 VIDEO_EXT = {"mkv", "mp4", "avi", "m4v", "ts", "wmv", "mov", "mpg", "mpeg"}
 INCOMPLETE = os.path.join(DOWNLOAD_DIR, ".incomplete")
@@ -47,7 +48,21 @@ _token = {"value": None}
 _token_lock = threading.Lock()
 
 
+_rate_lock = threading.Lock()
+_last_call = [0.0]
+
+
+def throttle():
+    """Keep the whole service under WS_MIN_INTERVAL seconds between Webshare API calls (bulk searches by Huntarr/Newtarr)."""
+    with _rate_lock:
+        wait = _last_call[0] + WS_MIN_INTERVAL - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.time()
+
+
 def ws_post(endpoint, **data):
+    throttle()
     r = http.post(f"{WS}/{endpoint}/", data=data, timeout=30)
     r.raise_for_status()
     return r.text
@@ -92,7 +107,7 @@ _search_cache = {}
 
 def ws_search(query, limit=100):
     hit = _search_cache.get(query)
-    if hit and time.time() - hit[0] < 300:
+    if hit and time.time() - hit[0] < 1800:
         return hit[1]
     out = _ws_search(query, limit)
     _search_cache[query] = (time.time(), out)
