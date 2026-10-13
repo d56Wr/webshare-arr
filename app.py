@@ -86,7 +86,21 @@ def ws_file_link(ident):
     raise RuntimeError("Webshare file_link failed after relogin")
 
 
+_search_cache = {}
+
+
 def ws_search(query, limit=100):
+    hit = _search_cache.get(query)
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    out = _ws_search(query, limit)
+    _search_cache[query] = (time.time(), out)
+    if len(_search_cache) > 500:
+        _search_cache.clear()
+    return out
+
+
+def _ws_search(query, limit=100):
     xml = ws_post("search", what=query, category="video", limit=limit, offset=0, sort="")
     out = []
     for block in re.findall(r"<file>(.*?)</file>", xml, re.S):
@@ -185,7 +199,7 @@ def tokens(s):
     return [t for t in re.split(r"[^a-z0-9]+", fold(s).lower()) if t]
 
 
-def score(f, q):
+def score(f, q, tv=False):
     """0-100 how well a Webshare file fits the search; negative-ish results are clamped to 0."""
     qt = tokens(q)
     year_m = re.search(r"\b(19|20)\d{2}\b", q)
@@ -201,12 +215,14 @@ def score(f, q):
     s = 50 * coverage
     # words that are neither in the query nor in the usual release noise suggest a different title ("Kolja 2", "Making of ...")
     extra = [t for t in nt if t not in qt and t not in NOISE and not t.isdigit() and not EP_RE.fullmatch(t)]
-    s -= min(25, 5 * len(extra))
+    s -= min(10 if tv else 25, 5 * len(extra))
     # title tokens should come first in the filename, not buried after other words
     if qt[0] in nt and nt.index(qt[0]) > 2:
         s -= 10
     years = set(re.findall(r"\b(?:19|20)\d{2}\b", fold(f["name"])))
-    if year:
+    if tv:
+        s += 10
+    elif year:
         s += 20 if year in years else (-25 if years else 0)
     else:
         s += 10
@@ -217,7 +233,7 @@ def score(f, q):
     return max(0, min(100, round(s)))
 
 
-def find_releases(q, season=None, ep=None, titles=None, year=None):
+def find_releases(q, season=None, ep=None, titles=None, year=None, tv=False):
     """Search Webshare for one or more titles of the same work and score every hit against its best-matching title."""
     if titles is None:
         ym = YEAR_RE.search(q)
@@ -247,7 +263,7 @@ def find_releases(q, season=None, ep=None, titles=None, year=None):
                 if m and (int(m.group(1) or m.group(3)), int(m.group(2) or m.group(4))) != (int(season), int(ep)):
                     continue
             seen.add(f["ident"])
-            best = max(((score(f, f"{t} {year}" if year else t), t) for t in titles), key=lambda x: x[0])
+            best = max(((score(f, f"{t} {year}" if year else t, tv), t) for t in titles), key=lambda x: x[0])
             f["score"], f["matched_title"] = best
             if f["score"] >= MIN_SCORE:
                 results.append(f)
@@ -299,6 +315,58 @@ def meta_titles(meta):
     return out[:14]
 
 
+# --------------------------------------------------------------------------- TV metadata + episode numbering
+
+SKYHOOK = "https://skyhook.sonarr.tv/v1/tvdb/shows/en"
+_tv_cache = {}
+SEASON_RE = re.compile(r"\b(?:rada|serie|season|sezona|series)[ ._-]*(\d{1,2})\b|\bs(\d{1,2})\b(?![ ._-]?e\d)", re.I)
+EP_EXPLICIT_RE = re.compile(r"(?:\b(?:e|ep|epizoda|episode|dil|part)[ ._-]?(\d{1,3})\b|\b(\d{1,3})[ ._-]*(?:dil|epizoda|episode)\b)", re.I)
+
+
+def tv_meta(tvdbid):
+    hit = _tv_cache.get(tvdbid)
+    if hit and time.time() - hit[0] < 86400:
+        return hit[1]
+    try:
+        r = http.get(f"{SKYHOOK}/{tvdbid}", timeout=20)
+        r.raise_for_status()
+        d = r.json()
+        meta = {"title": d["title"], "episodes": {(e["seasonNumber"], e["episodeNumber"]) for e in d.get("episodes", [])}}
+    except (requests.RequestException, ValueError, KeyError) as e:
+        print("tv metadata error", tvdbid, e, flush=True)
+        return hit[1] if hit else None
+    _tv_cache[tvdbid] = (time.time(), meta)
+    return meta
+
+
+def guess_episode(name, meta):
+    """(season, episode) for a file name, or None. Deliberately conservative: a wrong guess imports the wrong episode.
+
+    - SxxExx / 1x02 in the name is taken as is.
+    - Otherwise exactly one candidate episode number must be present, and the season must be stated in the name
+      or the show must have a single regular season. The (season, episode) must also exist in the show."""
+    episodes = meta["episodes"]
+    m = EP_RE.search(name)
+    if m:
+        se = (int(m.group(1) or m.group(3)), int(m.group(2) or m.group(4)))
+        return se if se in episodes else None
+    n = fold(name).replace("_", " ").replace(".", " ")
+    seasons = {sn for sn, _ in episodes if sn > 0}
+    sm = SEASON_RE.search(n)
+    season = int(sm.group(1) or sm.group(2)) if sm else (next(iter(seasons)) if len(seasons) == 1 else None)
+    if season is None:
+        return None
+    n_wo = SEASON_RE.sub(" ", n)
+    cands = {int(x) for g in EP_EXPLICIT_RE.findall(n_wo) for x in g if x}
+    if not cands:  # loose: bare 1-3 digit numbers that are not part of quality/year tokens
+        title_tokens = set(tokens(meta["title"]))
+        cands = {int(t) for t in re.findall(r"(?<![\w])(\d{1,3})(?![\w])", n_wo) if t not in title_tokens}
+    if len(cands) != 1:
+        return None
+    se = (season, cands.pop())
+    return se if se in episodes else None
+
+
 # --------------------------------------------------------------------------- Newznab
 
 def need_key():
@@ -325,7 +393,7 @@ def err(code, desc):
 CAPS = """<?xml version="1.0" encoding="UTF-8"?>
 <caps><server title="Webshare"/><limits max="100" default="100"/>
 <searching><search available="yes" supportedParams="q"/>
-<tv-search available="yes" supportedParams="q,season,ep"/>
+<tv-search available="yes" supportedParams="q,season,ep,tvdbid"/>
 <movie-search available="yes" supportedParams="q,imdbid,tmdbid"/></searching>
 <categories>
 <category id="2000" name="Movies"><subcat id="2030" name="Movies/SD"/><subcat id="2040" name="Movies/HD"/><subcat id="2045" name="Movies/UHD"/></category>
@@ -361,8 +429,22 @@ def newznab():
     meta = None
     if not is_tv and (tmdbid or imdbid):
         meta = movie_meta(tmdbid if tmdbid and tmdbid != "0" else None, ("tt" + imdbid.lstrip("t")) if imdbid else None)
+    tvmeta = None
+    if is_tv and request.args.get("tvdbid") not in (None, "", "0"):
+        tvmeta = tv_meta(request.args.get("tvdbid"))
+    want_s, want_e = request.args.get("season"), request.args.get("ep")
+    episode_of = {}
     items = []
-    if meta:
+    if tvmeta:
+        found = []
+        for f in find_releases(q, titles=[tvmeta["title"]], tv=True):
+            se = guess_episode(f["name"], tvmeta)
+            if not se or (want_s and se[0] != int(want_s)) or (want_e and se[1] != int(want_e)):
+                continue
+            episode_of[f["ident"]] = se
+            found.append(f)
+        print(f"tv {tvmeta['title']!r} s={want_s} e={want_e}: {len(found)} releases with a certain episode", flush=True)
+    elif meta:
         year = str(meta.get("Year") or year or "") or None
         found = find_releases(q, titles=meta_titles(meta), year=year)
     elif q:
@@ -372,6 +454,10 @@ def newznab():
     if True:
         for f in found:
             title = release_title(f["name"], f["size"], None if is_tv else year)
+            if f["ident"] in episode_of:
+                se = episode_of[f["ident"]]
+                tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
+                title = f"{safe(tvmeta['title'])} S{se[0]:02d}E{se[1]:02d} {tags} {lang_tag(f['name'])}".strip()
             if meta and f.get("matched_title") and f["matched_title"] != meta.get("Title"):
                 # found under a translated title: name the release after Radarr's own title so it parses and matches the movie
                 tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
