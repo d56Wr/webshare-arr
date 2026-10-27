@@ -51,29 +51,36 @@ flowchart LR
 
 ## 🚀 Quick start
 
-```bash
-git clone https://github.com/<you>/webshare-arr && cd webshare-arr
-cp .env.example .env        # fill in Webshare login + a random API key
-docker compose up -d --build
-curl localhost:9710/health  # {"ok": true, "jobs": 0, "vip": true}
-```
-
-`docker-compose.yml` at a glance:
+A prebuilt image (amd64 + arm64) is published to `ghcr.io/d56wr/webshare-arr`. Nothing to clone or build. Save this
+as `docker-compose.yml` (or add it to the one that runs your *arr stack):
 
 ```yaml
 services:
   webshare-arr:
-    build: .
-    network_mode: host                  # or publish 9710
-    user: "1000:1000"                   # same PUID/PGID as Radarr/Sonarr, so they can move finished files
-    env_file: .env
+    image: ghcr.io/d56wr/webshare-arr:latest
+    container_name: webshare-arr
+    restart: unless-stopped
+    user: "1000:1000"                       # same PUID/PGID as Radarr/Sonarr, so they can move finished files
+    ports:
+      - "9710:9710"
     environment:
-      - DOWNLOAD_DIR=/downloads/webshare  # must be the same path inside Radarr/Sonarr
-      - MAX_MBPS=10
+      - WS_USER=your-webshare-username
+      - WS_PASS=your-webshare-password
+      - API_KEY=pick-any-random-string      # you'll paste it into Radarr/Sonarr
+      - DOWNLOAD_DIR=/downloads/webshare    # must be the same path inside Radarr/Sonarr
     volumes:
       - ./data:/data
-      - /path/to/downloads:/downloads
+      - /path/to/downloads:/downloads       # the same downloads volume Radarr/Sonarr use
 ```
+
+```bash
+docker compose up -d
+curl localhost:9710/health    # {"ok": true, "jobs": 0, "vip": true}
+```
+
+> [!TIP]
+> Prefer secrets out of the compose file? Put them in a `.env` next to it (see [`.env.example`](.env.example)) and
+> use `env_file: .env` instead. To build it yourself: `git clone` this repo and run `docker compose up -d --build`.
 
 ### Connect Radarr and Sonarr
 
