@@ -24,3 +24,8 @@ Set `TMDB_TOKEN` (a TMDB "API Read Access Token") in `.env` to also search serie
 
 ## Rate limit
 All Webshare API calls go through one limiter (`WS_MIN_INTERVAL`, default 0.25 s) and search results are cached for 30 minutes, so bulk "search missing/upgrade" runs by Huntarr/Newtarr cannot hammer Webshare.
+
+## VIP-aware preference
+With `RADARR_*`/`SONARR_*` set, the service checks the Webshare account every `VIP_CHECK_MINUTES` (60). While VIP is active
+the delay profiles prefer usenet (= Webshare) and the Webshare indexer gets priority 25; without VIP they prefer torrents
+and Webshare drops to priority 40. Current state: `GET /health`.

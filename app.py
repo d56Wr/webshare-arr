@@ -838,9 +838,60 @@ def sab():
     return jsonify(status=True)
 
 
+# --------------------------------------------------------------------------- VIP -> protocol preference in Radarr/Sonarr
+
+ARRS = [(n, os.environ.get(f"{n.upper()}_URL", "").rstrip("/"), os.environ.get(f"{n.upper()}_KEY", "")) for n in ("radarr", "sonarr")]
+VIP_CHECK_MINUTES = float(os.environ.get("VIP_CHECK_MINUTES", "60"))
+PRIORITY_VIP, PRIORITY_FREE = 25, 40
+vip_state = {"vip": None, "checked": 0}
+
+
+def vip_active():
+    xml = ws_post("user_data", wst=ws_token())
+    if xml_field(xml, "status") != "OK":
+        xml = ws_post("user_data", wst=ws_token(force=True))
+    return xml_field(xml, "vip") == "1"
+
+
+def sync_arr_preference(vip):
+    """With VIP Webshare (10 MB/s) beats public torrents; without it (~300 KB/s) torrents should win ties.
+    Webshare is the only usenet-protocol client, so the delay profile's preferred protocol decides ties between them."""
+    want_proto, want_prio = ("usenet", PRIORITY_VIP) if vip else ("torrent", PRIORITY_FREE)
+    for name, url, key in ARRS:
+        if not url or not key:
+            continue
+        hdr = {"X-Api-Key": key}
+        try:
+            for d in http.get(f"{url}/api/v3/delayprofile", headers=hdr, timeout=30).json():
+                if d.get("preferredProtocol") != want_proto:
+                    d["preferredProtocol"] = want_proto
+                    http.put(f"{url}/api/v3/delayprofile/{d['id']}", json=d, headers=hdr, timeout=30).raise_for_status()
+                    print(f"{name}: delay profile {d['id']} now prefers {want_proto}", flush=True)
+            for ix in http.get(f"{url}/api/v3/indexer", headers=hdr, timeout=30).json():
+                if ix.get("name") == "Webshare" and ix.get("priority") != want_prio:
+                    ix["priority"] = want_prio
+                    http.put(f"{url}/api/v3/indexer/{ix['id']}?forceSave=true", json=ix, headers=hdr, timeout=60).raise_for_status()
+                    print(f"{name}: Webshare indexer priority {want_prio}", flush=True)
+        except (requests.RequestException, ValueError) as e:
+            print(f"{name}: cannot sync protocol preference: {e}", flush=True)
+
+
+def vip_watcher():
+    while True:
+        try:
+            vip = vip_active()
+            if vip != vip_state["vip"]:
+                print(f"Webshare VIP {'active' if vip else 'NOT active'}", flush=True)
+            vip_state.update(vip=vip, checked=time.time())
+            sync_arr_preference(vip)
+        except Exception as e:  # noqa: BLE001 - never let the watcher die
+            print("vip check failed:", e, flush=True)
+        time.sleep(VIP_CHECK_MINUTES * 60)
+
+
 @app.route("/health")
 def health():
-    return jsonify(ok=True, jobs=len(jobs))
+    return jsonify(ok=True, jobs=len(jobs), vip=vip_state["vip"])
 
 
 if __name__ == "__main__":
@@ -850,5 +901,6 @@ if __name__ == "__main__":
     load_state()
     load_unavailable()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=vip_watcher, daemon=True).start()
     from waitress import serve
     serve(app, host="0.0.0.0", port=PORT, threads=8)
