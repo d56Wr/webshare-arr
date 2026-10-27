@@ -52,6 +52,100 @@ _rate_lock = threading.Lock()
 _last_call = [0.0]
 
 
+FILEINFO_FILE = os.path.join(DATA_DIR, "fileinfo.json")
+FILEINFO_MAX = int(os.environ.get("FILEINFO_MAX", "60"))  # file_info calls per search, the rest falls back to the name
+_fileinfo = {}
+_fileinfo_lock = threading.Lock()
+AUDIO_LANGS = {  # stream language code -> token Radarr/Sonarr understand
+    "cze": "CZ", "ces": "CZ", "cz": "CZ", "cs": "CZ", "slk": "SK", "slo": "SK", "sk": "SK",
+    "eng": "ENGLISH", "en": "ENGLISH", "fre": "FRENCH", "fra": "FRENCH", "fr": "FRENCH", "ger": "GERMAN", "deu": "GERMAN",
+    "de": "GERMAN", "ita": "ITALIAN", "it": "ITALIAN", "spa": "SPANISH", "es": "SPANISH", "rus": "RUSSIAN", "ru": "RUSSIAN",
+    "pol": "POLISH", "pl": "POLISH", "jpn": "JAPANESE", "ja": "JAPANESE", "kor": "KOREAN", "ko": "KOREAN",
+    "swe": "SWEDISH", "sv": "SWEDISH", "dan": "DANISH", "da": "DANISH", "nor": "NORWEGIAN", "no": "NORWEGIAN",
+    "fin": "FINNISH", "fi": "FINNISH", "hun": "HUNGARIAN", "hu": "HUNGARIAN", "dut": "DUTCH", "nld": "DUTCH", "nl": "DUTCH",
+}
+AUDIO_FORMATS = [  # (stream format, release-title token, rank) - the token is what the audio custom formats match
+    ("TRUEHD", "TrueHD", 9), ("MLP", "TrueHD", 9), ("DTSHDMA", "DTS-HD MA", 8), ("DTSMA", "DTS-HD MA", 8),
+    ("FLAC", "FLAC", 7), ("PCM", "PCM", 7), ("LPCM", "PCM", 7), ("EAC3", "DDP", 6), ("DTS", "DTS", 5),
+    ("AC3", "DD", 3), ("AAC", "AAC", 2), ("OPUS", "Opus", 1), ("MP3", "MP3", 0),
+]
+AUDIO_NAME_RE = re.compile(r"\b(?:true[ .-]?hd|atmos|dts(?:[-_. ]?(?:hd[-_. ]?ma|hd|ma|x|es))?|ddp|dd\+|e-?ac-?3|ac-?3|dd|flac|l?pcm|aac)(?=\b|\d|_)"
+                           r"(?:[ ._]?[257][ ._]?[01]\b)?", re.I)
+CZECH_CHARS_RE = re.compile(r"[áčďéěíňóřšťúůýžľĺôä]", re.I)  # a file named with Czech/Slovak diacritics and no language info is a dub
+
+
+def load_fileinfo():
+    try:
+        with open(FILEINFO_FILE) as fh:
+            _fileinfo.update(json.load(fh))
+    except (OSError, ValueError):
+        pass
+
+
+def save_fileinfo():
+    with _fileinfo_lock:
+        try:
+            with open(FILEINFO_FILE + ".tmp", "w") as fh:
+                json.dump(_fileinfo, fh)
+            os.replace(FILEINFO_FILE + ".tmp", FILEINFO_FILE)
+        except OSError as e:
+            print("cannot save fileinfo.json:", e, flush=True)
+
+
+def file_info(ident):
+    """Real video size and audio tracks (language, format, channels) as Webshare measured them; cached forever, a file never
+    changes. Many names say nothing about audio: "Matrix.1999.CZ.2160p.mkv" is ENG TrueHD + CZ, "Počátek 2010.mkv" CZ only."""
+    if ident in _fileinfo:
+        return _fileinfo[ident]
+    try:
+        xml = ws_post("file_info", ident=ident, wst=ws_token())
+    except requests.RequestException as e:
+        print("file_info error", ident, e, flush=True)
+        return None
+    video = re.search(r"<video>(.*?)</video>", xml, re.S)
+    audio = re.search(r"<audio>(.*?)</audio>", xml, re.S)
+    info = {
+        "w": int(xml_field(video.group(1), "width") or 0) if video else 0,
+        "h": int(xml_field(video.group(1), "height") or 0) if video else 0,
+        "audio": [[(xml_field(st, "language") or "").strip().lower(), (xml_field(st, "format") or "").strip(), xml_field(st, "channels") or ""]
+                  for st in re.findall(r"<stream>(.*?)</stream>", audio.group(1), re.S)] if audio else [],
+    }
+    with _fileinfo_lock:
+        _fileinfo[ident] = info
+    return info
+
+
+def measured_resolution(info):
+    w, h = (info or {}).get("w", 0), (info or {}).get("h", 0)
+    if not w:
+        return None
+    return "2160p" if w >= 3000 or h >= 2000 else "1080p" if w >= 1700 or h >= 1000 else "720p" if w >= 1100 or h >= 700 else "480p"
+
+
+def audio_tags(name, info, original_lang=None):
+    """(audio format token, language tokens) for the release title. Languages come from the audio tracks when Webshare knows
+    them, else from the name. The format is the best track in the original language, so a dub cannot win the audio score."""
+    tracks = (info or {}).get("audio") or []
+    known = [AUDIO_LANGS.get(t[0]) for t in tracks if AUDIO_LANGS.get(t[0])]
+    langs = list(dict.fromkeys(known)) if known and len(known) == len(tracks) else None
+    if langs is not None:
+        langs.sort(key=lambda l: l not in ("CZ", "SK"))  # "CZ ENGLISH" like lang_tag
+    fmt = " ".join(dict.fromkeys(m.group(0).replace("_", " ") for m in AUDIO_NAME_RE.finditer(name or "")))
+    if not fmt:  # the name knows more (Atmos, DTS-HD MA) than the measured stream format, so it wins when present
+        def rank(t):
+            key = re.sub(r"[^A-Z0-9]", "", t[1].upper())
+            for code, token, r in AUDIO_FORMATS:
+                if key.startswith(code):
+                    return r, token, t
+            return -1, "", t
+        pool = [t for t in tracks if AUDIO_LANGS.get(t[0]) not in ("CZ", "SK")] or tracks
+        best = max((rank(t) for t in pool), default=(-1, "", None))
+        if best[1]:
+            ch = {"8": " 7.1", "6": " 5.1", "2": " 2.0"}.get(best[2][2], "")
+            fmt = best[1] + ch
+    return fmt, langs
+
+
 def throttle():
     """Keep the whole service under WS_MIN_INTERVAL seconds between Webshare API calls (bulk searches by Huntarr/Newtarr)."""
     with _rate_lock:
@@ -240,11 +334,6 @@ def release_title(name, size, year=None):
         if not re.search(rf"\b{part}\b", base, re.I):
             base += " " + part
     return base
-
-
-def starts_with_title(name, title):
-    want = tokens(title or "")
-    return bool(want) and tokens(name)[: len(want)] == want
 
 
 def usable(f):
@@ -566,29 +655,56 @@ def newznab():
         found = find_releases(q, request.args.get("season"), request.args.get("ep"))
     else:  # RSS-style probe (indexer test): a few generic recent-looking files
         found = [dict(f, score=0) for f in ws_search("cz 1080p") if usable(f) and not is_unavailable(f["ident"])][:20]
-    if True:
-        for f in found:
-            title = release_title(f["name"], f["size"], None if is_tv else year)
-            if f["ident"] in episode_of:
-                se = episode_of[f["ident"]]
-                tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
-                title = f"{safe(tvmeta['title'])} S{se[0]:02d}E{se[1]:02d} {tags} {lang_tag(f['name'])}".strip()
-            if meta and (f.get("matched_title", meta.get("Title")) != meta.get("Title") or not starts_with_title(title, meta.get("Title"))):
-                # found under a translated title, or the file name has junk before the title ("Básníci 6 Jak básníci..."):
-                # name the release after Radarr's own title so it parses and matches the movie
-                tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
-                title = f"{safe(meta['Title'])} {year} {tags} {lang_tag(f['name'])}".strip()
-            link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
-            cat = category_for(f, is_tv)
-            items.append(
-                f"<item><title>{escape(title)}</title><guid isPermaLink=\"false\">ws-{f['ident']}</guid>"
-                f"<link>{escape(link)}</link><pubDate>{format_datetime(datetime.now(timezone.utc))}</pubDate>"
-                f"<enclosure url={quoteattr(link)} length=\"{f['size']}\" type=\"application/x-nzb\"/>"
-                f"<newznab:attr name=\"category\" value=\"{cat}\"/>"
-                f"<newznab:attr name=\"size\" value=\"{f['size']}\"/>"
-                f"<newznab:attr name=\"grabs\" value=\"{f['pos']}\"/>"
-                f"<description>match {f['score']}%</description></item>"
-            )
+    if meta or tvmeta:
+        dubbed_titles = {}  # folded Czech/Slovak title -> its language, for names that only give away the dub by their title
+        if meta:
+            orig = {fold(meta.get("Title") or "").lower(), fold(meta.get("OriginalTitle") or "").lower()}
+            orig_text = f"{meta.get('Title')} {meta.get('OriginalTitle')}".lower()  # "Amélie" keeps its é without being a dub
+            for tr in meta.get("Translations", []):
+                if tr.get("Language") in TITLE_LANGS and tr.get("Title") and fold(tr["Title"]).lower() not in orig:
+                    dubbed_titles[fold(tr["Title"]).lower()] = "SK" if tr["Language"] == "sk-SK" else "CZ"
+        else:
+            orig = {fold(tvmeta["title"]).lower()}
+            orig_text = tvmeta["title"].lower()
+            dubbed_titles = {fold(t).lower(): "CZ" for t in tvmeta["cs_sk"] if fold(t).lower() not in orig}
+        fresh = sum(1 for f in found[:FILEINFO_MAX] if f["ident"] not in _fileinfo)
+        infos = {f["ident"]: file_info(f["ident"]) for f in found[:FILEINFO_MAX]}
+        if fresh:
+            save_fileinfo()
+    for f in found:
+        title = release_title(f["name"], f["size"], None if is_tv else year)
+        if meta or f["ident"] in episode_of:
+            # name the release ourselves: Radarr's/Sonarr's title (translated or junk-prefixed names would not parse), the
+            # resolution Webshare measured, source tags from the name, the original track's audio format and the real languages
+            info = infos.get(f["ident"])
+            res = measured_resolution(info)
+            tags = [m.group(0) for m in QUALITY_RE.finditer(f["name"])]
+            res_tags = [t for t in tags if re.fullmatch(r"2160p|4k|uhd|1080[pi]|720p|576p|480p", t, re.I)]
+            src_tags = [t for t in tags if t not in res_tags]
+            if not res:
+                res = res_tags[0] if res_tags else guess_quality(f["size"]).split()[0]
+            if not src_tags and res not in ("DVDRip",):
+                src_tags = ["WEBRip"]
+            fmt, langs = audio_tags(f["name"], info)
+            if langs is None:
+                lang = (lang_tag(f["name"]) or dubbed_titles.get(fold(f.get("matched_title") or "").lower(), "")
+                        or ("CZ" if set(CZECH_CHARS_RE.findall(f["name"].lower())) - set(orig_text) else ""))
+            else:
+                lang = " ".join(langs)
+            head = (f"{safe(tvmeta['title'])} S{episode_of[f['ident']][0]:02d}E{episode_of[f['ident']][1]:02d}"
+                    if f["ident"] in episode_of else f"{safe(meta['Title'])} {year or ''}")
+            title = re.sub(r"\s+", " ", " ".join([head, res, *dict.fromkeys(src_tags), fmt, lang])).strip()
+        link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
+        cat = category_for(f, is_tv)
+        items.append(
+            f"<item><title>{escape(title)}</title><guid isPermaLink=\"false\">ws-{f['ident']}</guid>"
+            f"<link>{escape(link)}</link><pubDate>{format_datetime(datetime.now(timezone.utc))}</pubDate>"
+            f"<enclosure url={quoteattr(link)} length=\"{f['size']}\" type=\"application/x-nzb\"/>"
+            f"<newznab:attr name=\"category\" value=\"{cat}\"/>"
+            f"<newznab:attr name=\"size\" value=\"{f['size']}\"/>"
+            f"<newznab:attr name=\"grabs\" value=\"{f['pos']}\"/>"
+            f"<description>match {f['score']}%</description></item>"
+        )
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">'
         f"<channel><title>Webshare</title>{''.join(items)}</channel></rss>"
@@ -906,6 +1022,7 @@ if __name__ == "__main__":
     os.makedirs(INCOMPLETE, exist_ok=True)
     load_state()
     load_unavailable()
+    load_fileinfo()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=vip_watcher, daemon=True).start()
     from waitress import serve

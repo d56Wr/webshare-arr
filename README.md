@@ -12,6 +12,14 @@ Bridge between [Webshare.cz](https://webshare.cz) and Radarr/Sonarr.
 
 Tunables (env): `MIN_SCORE` (55), `MIN_MB` (150), `MAX_GB` (40), `LANG_TAG` (CZECH).
 
+## Real audio tracks and resolution
+
+For movie/TV searches by id, the top `FILEINFO_MAX` (60) hits are looked up with Webshare's `file_info` (cached forever in
+`data/fileinfo.json`). The release title is then built from facts: Radarr/Sonarr's own title, the measured resolution,
+source tags from the file name, the original-language track's audio format (`TrueHD 7.1`, `DTS 5.1`, `DDP 5.1`, ...) and the
+languages of the audio tracks (`CZ ENGLISH` = multi, `CZ` = dub only). Without track languages the file name decides, and a
+name with Czech/Slovak diacritics not found in the original title counts as a dub.
+
 ## Extra titles (`data/aliases.json`)
 Series have no Czech/Slovak titles in the metadata Sonarr uses, so add them by hand (TVDB id for series, TMDB id for movies); changes are picked up without a restart:
 ```json
