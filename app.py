@@ -71,6 +71,8 @@ AUDIO_FORMATS = [  # (stream format, release-title token, rank) - the token is w
 ]
 AUDIO_NAME_RE = re.compile(r"\b(?:true[ .-]?hd|atmos|dts(?:[-_. ]?(?:hd[-_. ]?ma|hd|ma|x|es))?|ddp|dd\+|e-?ac-?3|ac-?3|dd|flac|l?pcm|aac)(?=\b|\d|_)"
                            r"(?:[ ._]?[257][ ._]?[01]\b)?", re.I)
+EDITION_RE = re.compile(r"extended|director|uncut|unrated|redux|final[ ._-]?cut|special[ ._-]?edition|prodlouzen|rozsiren|rezisersk"
+                        r"|nesestrihan|ultimate|\bee\b|\bdc\b", re.I)
 CZECH_CHARS_RE = re.compile(r"[áčďéěíňóřšťúůýžľĺôä]", re.I)  # a file named with Czech/Slovak diacritics and no language info is a dub
 
 
@@ -95,7 +97,7 @@ def save_fileinfo():
 def file_info(ident):
     """Real video size and audio tracks (language, format, channels) as Webshare measured them; cached forever, a file never
     changes. Many names say nothing about audio: "Matrix.1999.CZ.2160p.mkv" is ENG TrueHD + CZ, "Počátek 2010.mkv" CZ only."""
-    if ident in _fileinfo:
+    if "len" in _fileinfo.get(ident, {}):
         return _fileinfo[ident]
     try:
         xml = ws_post("file_info", ident=ident, wst=ws_token())
@@ -105,6 +107,7 @@ def file_info(ident):
     video = re.search(r"<video>(.*?)</video>", xml, re.S)
     audio = re.search(r"<audio>(.*?)</audio>", xml, re.S)
     info = {
+        "len": int(float(xml_field(xml, "length") or 0)),  # seconds
         "w": int(xml_field(video.group(1), "width") or 0) if video else 0,
         "h": int(xml_field(video.group(1), "height") or 0) if video else 0,
         "audio": [[(xml_field(st, "language") or "").strip().lower(), (xml_field(st, "format") or "").strip(), xml_field(st, "channels") or ""]
@@ -671,6 +674,21 @@ def newznab():
         infos = {f["ident"]: file_info(f["ident"]) for f in found[:FILEINFO_MAX]}
         if fresh:
             save_fileinfo()
+        runtime = int((meta or {}).get("Runtime") or 0) * 60
+        if runtime:
+            # a title without year is ambiguous: "Pán prstenů - Společenstvo prstenu.mkv" (2001, 178 min) matched the 1978
+            # "Pán prstenů" (132 min). The measured length tells them apart. Extended cuts run 25-40 % longer, so they get
+            # room when the name says so or carries the right year; a bare title must be close to the runtime.
+            def length_ok(f):
+                length = (infos.get(f["ident"]) or {}).get("len", 0)
+                if not length:
+                    return True
+                sure = (year and year in f["name"]) or EDITION_RE.search(fold(f["name"]))
+                return runtime * 0.75 - 600 <= length <= runtime * (1.6 if sure else 1.2) + 600
+            dropped = [f["name"] for f in found if not length_ok(f)]
+            if dropped:
+                print(f"dropped {len(dropped)} by length (runtime {runtime // 60} min): {dropped[:5]}", flush=True)
+            found = [f for f in found if length_ok(f)]
     for f in found:
         title = release_title(f["name"], f["size"], None if is_tv else year)
         if meta or f["ident"] in episode_of:
