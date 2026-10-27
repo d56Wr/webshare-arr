@@ -242,6 +242,11 @@ def release_title(name, size, year=None):
     return base
 
 
+def starts_with_title(name, title):
+    want = tokens(title or "")
+    return bool(want) and tokens(name)[: len(want)] == want
+
+
 def usable(f):
     if f["type"] and f["type"].lower() not in VIDEO_EXT:
         return False
@@ -568,8 +573,9 @@ def newznab():
                 se = episode_of[f["ident"]]
                 tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
                 title = f"{safe(tvmeta['title'])} S{se[0]:02d}E{se[1]:02d} {tags} {lang_tag(f['name'])}".strip()
-            if meta and f.get("matched_title") and f["matched_title"] != meta.get("Title"):
-                # found under a translated title: name the release after Radarr's own title so it parses and matches the movie
+            if meta and (f.get("matched_title", meta.get("Title")) != meta.get("Title") or not starts_with_title(title, meta.get("Title"))):
+                # found under a translated title, or the file name has junk before the title ("Básníci 6 Jak básníci..."):
+                # name the release after Radarr's own title so it parses and matches the movie
                 tags = " ".join(dict.fromkeys(m.group(0) for m in QUALITY_RE.finditer(f["name"]))) or guess_quality(f["size"])
                 title = f"{safe(meta['Title'])} {year} {tags} {lang_tag(f['name'])}".strip()
             link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
