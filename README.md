@@ -4,7 +4,7 @@
 
 **Webshare.cz as a first-class indexer *and* download client for Radarr & Sonarr.**
 
-Czech & Slovak movies and series — dubbed, multi-audio or original — found, scored and imported
+Czech & Slovak movies and series - dubbed, multi-audio or original - found, scored and imported
 like any other release.
 
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
@@ -43,7 +43,7 @@ flowchart LR
 | 🔎 **Finds it in any language** | Searches by TMDB/IMDb/TVDB id under the English, original, **Czech and Slovak** titles (from Radarr's metadata server and TMDB), plus hand-made aliases. |
 | 🎧 **Knows what's really inside** | Asks Webshare for the *measured* audio tracks and video size of each hit. `Matrix.1999.CZ.2160p.mkv` is published as **TrueHD 7.1, CZ + ENGLISH (multi)**; `Počátek 2010.mkv` as **CZ dub only**. |
 | 🏷️ **Releases that parse** | Each hit gets a clean title: *arr's own title, year/SxxEyy, real resolution, source, audio format, languages. Translated or junk-prefixed names import automatically. |
-| 📊 **Scores results 0–100** | Title coverage, year, extra words, container, sensible size, votes; cams, trailers and samples are dropped. |
+| 📊 **Scores results 0-100** | Title coverage, year, extra words, container, sensible size, votes; cams, trailers and samples are dropped. |
 | 📺 **Careful with episodes** | Episode numbers are taken from `S01E02`/`1x02`, or guessed only when the show's episode list confirms it. |
 | ⬇️ **Real download client** | Resumable downloads, speed cap, Radarr/Sonarr see progress, queue and history like SABnzbd. |
 | 🛡️ **Polite to Webshare** | One global rate limiter, a 30 min search cache, a permanent file-info cache, and files Webshare refuses are hidden for a week (no re-grab loops). |
@@ -119,20 +119,20 @@ Audio custom formats (TrueHD, DTS-HD MA, DD+, Atmos, …) work too. The audio to
 
 | Variable | Default | |
 |---|---|---|
-| `WS_USER`, `WS_PASS` | — | Webshare login (**required**) |
-| `API_KEY` | — | Shared secret for Radarr/Sonarr (**required**) |
+| `WS_USER`, `WS_PASS` | - | Webshare login (**required**) |
+| `API_KEY` | - | Shared secret for Radarr/Sonarr (**required**) |
 | `PORT` | `9710` | HTTP port |
 | `DOWNLOAD_DIR` | `/downloads` | Finished files; partial ones live in `.incomplete/` |
 | `DATA_DIR` | `/data` | Caches and state (see below) |
 | `MAX_MBPS` | `0` | Download speed cap in MB/s, `0` = unlimited |
-| `MIN_SCORE` | `55` | Minimum match score 0–100 |
+| `MIN_SCORE` | `55` | Minimum match score 0-100 |
 | `MIN_MB` / `MAX_GB` | `150` / `40` | File size window |
 | `WS_MIN_INTERVAL` | `0.25` | Seconds between Webshare API calls |
 | `FILEINFO_MAX` | `60` | Hits per search whose audio tracks are looked up |
 | `UNAVAILABLE_DAYS` | `7` | How long a file Webshare refused stays hidden |
-| `TMDB_TOKEN` | — | TMDB *API Read Access Token*: Czech/Slovak **series** titles |
-| `RADARR_URL` / `RADARR_KEY` | — | Enables VIP-aware preference for Radarr |
-| `SONARR_URL` / `SONARR_KEY` | — | …and for Sonarr |
+| `TMDB_TOKEN` | - | TMDB *API Read Access Token*: Czech/Slovak **series** titles |
+| `RADARR_URL` / `RADARR_KEY` | - | Enables VIP-aware preference for Radarr |
+| `SONARR_URL` / `SONARR_KEY` | - | …and for Sonarr |
 | `VIP_CHECK_MINUTES` | `60` | How often the VIP status is checked |
 
 ### Files in `DATA_DIR`
