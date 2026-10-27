@@ -1,0 +1,30 @@
+# Example for the common "one data share" layout (https://trash-guides.info/File-and-Folder-Structure/):
+#
+#   /srv/data
+#   ├── torrents/          qBittorrent, Transmission, ...
+#   ├── usenet/
+#   │   └── webshare/      <- webshare-arr downloads here
+#   └── media/
+#       ├── movies/        Radarr root folder
+#       └── tv/            Sonarr root folder
+#
+# Mount the same /srv/data as /data in Radarr and Sonarr too: paths then match everywhere and imports are instant
+# hardlinks/moves instead of copies.
+
+services:
+  webshare-arr:
+    image: ghcr.io/d56wr/webshare-arr:latest
+    container_name: webshare-arr
+    restart: unless-stopped
+    user: "1000:1000"                         # same PUID/PGID as Radarr/Sonarr, so they can move finished files
+    ports:
+      - "9710:9710"
+    env_file: .env                            # WS_USER, WS_PASS, API_KEY, ... (see .env.example)
+    environment:
+      - DOWNLOAD_DIR=/data/usenet/webshare
+      - DATA_DIR=/config
+      - MAX_MBPS=0                            # speed cap in MB/s, 0 = unlimited
+      - TZ=Europe/Prague
+    volumes:
+      - ./config:/config                      # caches, aliases.json
+      - /srv/data:/data

@@ -52,8 +52,21 @@ flowchart LR
 
 ## 🚀 Quick start
 
-A prebuilt image (amd64 + arm64) is published to `ghcr.io/d56wr/webshare-arr`. Nothing to clone or build. Save this
-as `docker-compose.yml` (or add it to the one that runs your *arr stack):
+A prebuilt image (amd64 + arm64) is published to `ghcr.io/d56wr/webshare-arr`. Nothing to clone or build.
+
+The example assumes the popular single-share layout, with the same `/srv/data` mounted as `/data` in Radarr and Sonarr:
+
+```
+/srv/data
+├── torrents/
+├── usenet/
+│   └── webshare/      <- webshare-arr downloads here
+└── media/
+    ├── movies/        Radarr root folder
+    └── tv/            Sonarr root folder
+```
+
+Save this as `docker-compose.yml` (also in the repo as [`docker-compose.example.yml`](docker-compose.example.yml)):
 
 ```yaml
 services:
@@ -68,10 +81,11 @@ services:
       - WS_USER=your-webshare-username
       - WS_PASS=your-webshare-password
       - API_KEY=pick-any-random-string      # you'll paste it into Radarr/Sonarr
-      - DOWNLOAD_DIR=/downloads/webshare    # must be the same path inside Radarr/Sonarr
+      - DOWNLOAD_DIR=/data/usenet/webshare
+      - DATA_DIR=/config
     volumes:
-      - ./data:/data
-      - /path/to/downloads:/downloads       # the same downloads volume Radarr/Sonarr use
+      - ./config:/config                    # caches, aliases.json
+      - /srv/data:/data                     # same mount as in Radarr/Sonarr
 ```
 
 ```bash
@@ -81,7 +95,8 @@ curl localhost:9710/health    # {"ok": true, "jobs": 0, "vip": true}
 
 > [!TIP]
 > Prefer secrets out of the compose file? Put them in a `.env` next to it (see [`.env.example`](.env.example)) and
-> use `env_file: .env` instead. To build it yourself: `git clone` this repo and run `docker compose up -d --build`.
+> use `env_file: .env` instead. To build it yourself: clone the repo, copy `docker-compose.example.yml` to `docker-compose.yml`,
+> add `build: .` and run `docker compose up -d --build`.
 
 ### Connect Radarr and Sonarr
 
@@ -123,7 +138,7 @@ Audio custom formats (TrueHD, DTS-HD MA, DD+, Atmos, …) work too. The audio to
 | `WS_USER`, `WS_PASS` | - | Webshare login (**required**) |
 | `API_KEY` | - | Shared secret for Radarr/Sonarr (**required**) |
 | `PORT` | `9710` | HTTP port |
-| `DOWNLOAD_DIR` | `/downloads` | Finished files; partial ones live in `.incomplete/` |
+| `DOWNLOAD_DIR` | `/downloads` | Finished files; partial ones live in `.incomplete/`. Must be the same path inside Radarr/Sonarr |
 | `DATA_DIR` | `/data` | Caches and state (see below) |
 | `MAX_MBPS` | `0` | Download speed cap in MB/s, `0` = unlimited |
 | `MIN_SCORE` | `55` | Minimum match score 0-100 |
