@@ -91,6 +91,42 @@ def ws_token(force=False):
         return _token["value"]
 
 
+class FileUnavailable(RuntimeError):
+    """Webshare refuses to hand out a link for this file (removed, blocked, "temporarily unavailable")."""
+
+
+UNAVAILABLE_FILE = os.path.join(DATA_DIR, "unavailable.json")
+UNAVAILABLE_DAYS = float(os.environ.get("UNAVAILABLE_DAYS", "7"))
+_unavailable = {}
+_unavailable_lock = threading.Lock()
+
+
+def load_unavailable():
+    try:
+        with open(UNAVAILABLE_FILE) as fh:
+            _unavailable.update(json.load(fh))
+    except (OSError, ValueError):
+        pass
+
+
+def mark_unavailable(ident):
+    with _unavailable_lock:
+        _unavailable[ident] = time.time()
+        try:
+            with open(UNAVAILABLE_FILE + ".tmp", "w") as fh:
+                json.dump(_unavailable, fh)
+            os.replace(UNAVAILABLE_FILE + ".tmp", UNAVAILABLE_FILE)
+        except OSError as e:
+            print("cannot save unavailable.json:", e, flush=True)
+
+
+def is_unavailable(ident):
+    """Files Webshare refused recently are not offered again. Radarr's blocklist does not catch them: the failed release
+    is blocklisted without publish date and size, so Radarr re-grabs the very same release in a loop (seen 1500x)."""
+    ts = _unavailable.get(ident)
+    return bool(ts) and time.time() - ts < UNAVAILABLE_DAYS * 86400
+
+
 def ws_file_link(ident):
     for attempt in (0, 1):
         xml = ws_post("file_link", ident=ident, wst=ws_token(force=bool(attempt)), download_type="file_download")
@@ -98,7 +134,7 @@ def ws_file_link(ident):
             return xml_field(xml, "link").replace("&amp;", "&")
         code = xml_field(xml, "code")
         if code != "LOGIN_FATAL_1" and attempt == 0 and "LOGIN" not in (code or ""):
-            raise RuntimeError(f"Webshare file_link: {xml_field(xml, 'message') or code}")
+            raise FileUnavailable(f"Webshare file_link: {xml_field(xml, 'message') or code}")
     raise RuntimeError("Webshare file_link failed after relogin")
 
 
@@ -292,7 +328,7 @@ def find_releases(q, season=None, ep=None, titles=None, year=None, tv=False, lim
     seen, results = set(), []
     for files in batches:
         for f in files:
-            if f["ident"] in seen or not usable(f):
+            if f["ident"] in seen or not usable(f) or is_unavailable(f["ident"]):
                 continue
             if season and ep:
                 m = EP_RE.search(f["name"])
@@ -524,7 +560,7 @@ def newznab():
     elif q:
         found = find_releases(q, request.args.get("season"), request.args.get("ep"))
     else:  # RSS-style probe (indexer test): a few generic recent-looking files
-        found = [dict(f, score=0) for f in ws_search("cz 1080p") if usable(f)][:20]
+        found = [dict(f, score=0) for f in ws_search("cz 1080p") if usable(f) and not is_unavailable(f["ident"])][:20]
     if True:
         for f in found:
             title = release_title(f["name"], f["size"], None if is_tv else year)
@@ -652,14 +688,17 @@ def worker():
                     print("done", j["name"], flush=True)
         except Exception as e:  # noqa: BLE001 - keep the worker alive whatever happens
             print("job failed", j["name"], e, flush=True)
+            if isinstance(e, FileUnavailable):
+                mark_unavailable(j["ident"])
             with jobs_lock:
                 j["retries"] = j.get("retries", 0) + 1
                 j["error"] = str(e)
-                if j["retries"] >= 5:
+                if j["retries"] >= 5 or isinstance(e, FileUnavailable):
                     j["status"], j["completed"] = "Failed", time.time()
                 else:
                     j["status"] = "Queued"
-            time.sleep(min(60, 5 * j["retries"]))
+            if not isinstance(e, FileUnavailable):
+                time.sleep(min(60, 5 * j["retries"]))
         cancelled.discard(j["id"])
         save_state()
 
@@ -809,6 +848,7 @@ if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(INCOMPLETE, exist_ok=True)
     load_state()
+    load_unavailable()
     threading.Thread(target=worker, daemon=True).start()
     from waitress import serve
     serve(app, host="0.0.0.0", port=PORT, threads=8)
