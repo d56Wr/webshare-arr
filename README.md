@@ -12,6 +12,7 @@ like any other release.
 ![Radarr](https://img.shields.io/badge/Radarr-v5-FFC230)
 ![Sonarr](https://img.shields.io/badge/Sonarr-v4-35C5F4)
 ![Single file](https://img.shields.io/badge/app.py-~1k%20lines-555)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 </div>
 
@@ -205,7 +206,9 @@ No. Every API call waits for a shared limiter, searches are cached for 30 minute
 Huntarr/Newtarr are fine.
 </details>
 
-## ⚖️ Disclaimer
+## ⚖️ License & disclaimer
+
+[MIT](LICENSE).
 
 This is an unofficial project, not affiliated with Webshare.cz. You need your own Webshare account. You are responsible
 for complying with Webshare's terms and the copyright law of your country.
