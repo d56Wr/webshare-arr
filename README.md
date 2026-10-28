@@ -9,8 +9,8 @@ like any other release.
 
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
-![Radarr](https://img.shields.io/badge/Radarr-v5-FFC230)
-![Sonarr](https://img.shields.io/badge/Sonarr-v4-35C5F4)
+![Radarr](https://img.shields.io/badge/tested-Radarr%20v6.4-FFC230)
+![Sonarr](https://img.shields.io/badge/tested-Sonarr%20v4.0-35C5F4)
 ![Single file](https://img.shields.io/badge/app.py-~1k%20lines-555)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
