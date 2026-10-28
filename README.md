@@ -47,6 +47,7 @@ flowchart LR
 | 📊 **Scores results 0-100** | Title coverage, year, extra words, container, sensible size, votes; cams, trailers and samples are dropped. |
 | 📺 **Careful with episodes** | Episode numbers are taken from `S01E02`/`1x02`, or guessed only when the show's episode list confirms it. |
 | ⬇️ **Real download client** | Resumable downloads, speed cap, Radarr/Sonarr see progress, queue and history like SABnzbd. |
+| ♻️ **Self-cleaning queue** | A file worse than its name ("1080p" that is really 576p) is removed from the queue and blocklisted automatically, so the app grabs something else. Each file keeps a stable publish date, so the usenet blocklist really matches. |
 | 🛡️ **Polite to Webshare** | One global rate limiter, a 30 min search cache, a permanent file-info cache, and files Webshare refuses are hidden for a week (no re-grab loops). |
 | 👑 **VIP-aware** | While your account has VIP, Webshare is preferred over torrents. When VIP ends, torrents win again. Fully automatic. |
 
@@ -150,6 +151,7 @@ Audio custom formats (TrueHD, DTS-HD MA, DD+, Atmos, …) work too. The audio to
 | `RADARR_URL` / `RADARR_KEY` | - | Enables VIP-aware preference for Radarr |
 | `SONARR_URL` / `SONARR_KEY` | - | …and for Sonarr |
 | `VIP_CHECK_MINUTES` | `60` | How often the VIP status is checked |
+| `QUEUE_CHECK_MINUTES` | `10` | How often finished downloads that Radarr/Sonarr refuse as "not an upgrade" are removed and blocklisted |
 
 ### Files in `DATA_DIR`
 

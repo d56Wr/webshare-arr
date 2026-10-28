@@ -114,6 +114,8 @@ def file_info(ident):
                   for st in re.findall(r"<stream>(.*?)</stream>", audio.group(1), re.S)] if audio else [],
     }
     with _fileinfo_lock:
+        if "seen" in _fileinfo.get(ident, {}):
+            info["seen"] = _fileinfo[ident]["seen"]
         _fileinfo[ident] = info
     return info
 
@@ -713,14 +715,14 @@ def newznab():
             head = (f"{safe(tvmeta['title'])} S{episode_of[f['ident']][0]:02d}E{episode_of[f['ident']][1]:02d}"
                     if f["ident"] in episode_of else f"{safe(meta['Title'])} {year or ''}")
             title = re.sub(r"\s+", " ", " ".join([head, res, *dict.fromkeys(src_tags), fmt, lang])).strip()
-        pub = datetime.now(timezone.utc)
-        if f["ident"] in _fileinfo:
-            # a stable publish date per file: Radarr/Sonarr match a usenet blocklist entry by publish date (+-2 days),
-            # so with "now" a blocklisted file came back two days later
-            if "seen" not in _fileinfo[f["ident"]]:
-                _fileinfo[f["ident"]]["seen"] = int(time.time())
+        # a stable publish date per file: Radarr/Sonarr match a usenet blocklist entry by the exact publish date of the
+        # grabbed release, so with "now" a blocklisted file was offered (and grabbed) again on the next search
+        with _fileinfo_lock:
+            entry = _fileinfo.setdefault(f["ident"], {})
+            if "seen" not in entry:
+                entry["seen"] = int(time.time())
                 seen_added = True
-            pub = datetime.fromtimestamp(_fileinfo[f["ident"]]["seen"], timezone.utc)
+        pub = datetime.fromtimestamp(entry["seen"], timezone.utc)
         link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
         cat = category_for(f, is_tv)
         items.append(
@@ -1040,6 +1042,38 @@ def vip_watcher():
         time.sleep(VIP_CHECK_MINUTES * 60)
 
 
+QUEUE_CHECK_MINUTES = float(os.environ.get("QUEUE_CHECK_MINUTES", "10"))
+NOT_UPGRADE = ("Not an upgrade", "Not a Custom Format upgrade", "Not a quality revision upgrade")
+
+
+def clean_rejected_imports():
+    """A file can be worse than its name (Webshare has no measurements for ~15 % of files, "Bdrip.1080p" turned out 576p).
+    Radarr/Sonarr then keep the finished download in the queue as "import pending" forever. Remove such Webshare items
+    with blocklist, which deletes the files and lets the app search for another release."""
+    for name, url, key in ARRS:
+        if not url or not key:
+            continue
+        hdr = {"X-Api-Key": key}
+        try:
+            recs = http.get(f"{url}/api/v3/queue", params={"pageSize": 1000}, headers=hdr, timeout=60).json()["records"]
+            for q in recs:
+                if not str(q.get("downloadId", "")).startswith("ws_") or q.get("trackedDownloadState") not in ("importPending", "importBlocked"):
+                    continue
+                msgs = [m for sm in q.get("statusMessages", []) for m in sm.get("messages", [])]
+                if msgs and all(any(m.startswith(p) for p in NOT_UPGRADE) for m in msgs):
+                    http.delete(f"{url}/api/v3/queue/{q['id']}", params={"removeFromClient": "true", "blocklist": "true"},
+                                headers=hdr, timeout=60).raise_for_status()
+                    print(f"{name}: removed + blocklisted {q['title']!r}: {msgs[0]}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"{name}: queue check failed: {e}", flush=True)
+
+
+def queue_watcher():
+    while True:
+        time.sleep(QUEUE_CHECK_MINUTES * 60)
+        clean_rejected_imports()
+
+
 @app.route("/health")
 def health():
     return jsonify(ok=True, jobs=len(jobs), vip=vip_state["vip"])
@@ -1054,5 +1088,6 @@ if __name__ == "__main__":
     load_fileinfo()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=vip_watcher, daemon=True).start()
+    threading.Thread(target=queue_watcher, daemon=True).start()
     from waitress import serve
     serve(app, host="0.0.0.0", port=PORT, threads=8)
