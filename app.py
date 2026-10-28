@@ -689,6 +689,7 @@ def newznab():
             if dropped:
                 print(f"dropped {len(dropped)} by length (runtime {runtime // 60} min): {dropped[:5]}", flush=True)
             found = [f for f in found if length_ok(f)]
+    seen_added = False
     for f in found:
         title = release_title(f["name"], f["size"], None if is_tv else year)
         if meta or f["ident"] in episode_of:
@@ -712,17 +713,27 @@ def newznab():
             head = (f"{safe(tvmeta['title'])} S{episode_of[f['ident']][0]:02d}E{episode_of[f['ident']][1]:02d}"
                     if f["ident"] in episode_of else f"{safe(meta['Title'])} {year or ''}")
             title = re.sub(r"\s+", " ", " ".join([head, res, *dict.fromkeys(src_tags), fmt, lang])).strip()
+        pub = datetime.now(timezone.utc)
+        if f["ident"] in _fileinfo:
+            # a stable publish date per file: Radarr/Sonarr match a usenet blocklist entry by publish date (+-2 days),
+            # so with "now" a blocklisted file came back two days later
+            if "seen" not in _fileinfo[f["ident"]]:
+                _fileinfo[f["ident"]]["seen"] = int(time.time())
+                seen_added = True
+            pub = datetime.fromtimestamp(_fileinfo[f["ident"]]["seen"], timezone.utc)
         link = f"{base}/api?t=get&apikey={API_KEY}&id={f['ident']}&size={f['size']}&name={requests.utils.quote(f['name'])}"
         cat = category_for(f, is_tv)
         items.append(
             f"<item><title>{escape(title)}</title><guid isPermaLink=\"false\">ws-{f['ident']}</guid>"
-            f"<link>{escape(link)}</link><pubDate>{format_datetime(datetime.now(timezone.utc))}</pubDate>"
+            f"<link>{escape(link)}</link><pubDate>{format_datetime(pub)}</pubDate>"
             f"<enclosure url={quoteattr(link)} length=\"{f['size']}\" type=\"application/x-nzb\"/>"
             f"<newznab:attr name=\"category\" value=\"{cat}\"/>"
             f"<newznab:attr name=\"size\" value=\"{f['size']}\"/>"
             f"<newznab:attr name=\"grabs\" value=\"{f['pos']}\"/>"
             f"<description>match {f['score']}%</description></item>"
         )
+    if seen_added:
+        save_fileinfo()
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">'
         f"<channel><title>Webshare</title>{''.join(items)}</channel></rss>"
