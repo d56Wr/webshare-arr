@@ -1076,7 +1076,7 @@ def queue_watcher():
 
 @app.route("/health")
 def health():
-    return jsonify(ok=True, jobs=len(jobs), vip=vip_state["vip"])
+    return jsonify(ok=True, version=os.environ.get("APP_VERSION", "dev"), jobs=len(jobs), vip=vip_state["vip"])
 
 
 if __name__ == "__main__":

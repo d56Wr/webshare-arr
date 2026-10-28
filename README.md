@@ -91,7 +91,7 @@ services:
 
 ```bash
 docker compose up -d
-curl localhost:9710/health    # {"ok": true, "jobs": 0, "vip": true}
+curl localhost:9710/health    # {"ok": true, "version": "0.1.0", "jobs": 0, "vip": true}
 ```
 
 > [!TIP]
@@ -185,13 +185,27 @@ checks the account every hour and adjusts both apps:
 
 Manual changes to these two settings are overwritten on the next check. Remove the variables to opt out.
 
+## 🏷️ Versions & updates
+
+Releases follow [semver](https://semver.org) and are listed on the
+[Releases page](https://github.com/d56Wr/webshare-arr/releases) with their changes. *Watch → Custom → Releases* on GitHub
+to get notified. Image tags:
+
+| Tag | |
+|---|---|
+| `latest` | Newest commit on `main` |
+| `0.1.0` | Exact release |
+| `0.1` | Newest `0.1.x` patch release (pin this to get fixes without surprises) |
+
+`GET /health` reports the running version. Update with `docker compose pull && docker compose up -d`.
+
 ## 🔌 Endpoints
 
 | Path | |
 |---|---|
 | `GET /api?t=caps\|search\|movie\|tvsearch\|get` | Newznab |
 | `GET/POST /sabnzbd/api?mode=…` | SABnzbd (`version`, `get_config`, `queue`, `history`, `addfile`, `addurl`, `delete`) |
-| `GET /health` | `{"ok", "jobs", "vip"}` |
+| `GET /health` | `{"ok", "version", "jobs", "vip"}` |
 
 ## ❓ FAQ
 
