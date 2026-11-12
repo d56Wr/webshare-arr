@@ -127,6 +127,20 @@ def measured_resolution(info):
     return "2160p" if w >= 3000 or h >= 2000 else "1080p" if w >= 1700 or h >= 1000 else "720p" if w >= 1100 or h >= 700 else "480p"
 
 
+BITRATE_TIERS = {"2160p": (20, 9), "1080p": (10, 4), "720p": (5, 2)}  # (high, low) total Mbit/s for the measured resolution
+
+
+def bitrate_tag(info, size, res):
+    """HiBitrate / LoBitrate from file size and the length Webshare measured, so a custom format can prefer a 14 Mbit/s 1080p
+    "WEBRip" over a 2 Mbit/s one, which the quality name alone cannot tell apart. Empty when length or resolution is unknown."""
+    length = (info or {}).get("len", 0)
+    tier = BITRATE_TIERS.get(res)
+    if not length or not tier or not size:
+        return ""
+    mbps = size * 8 / length / 1e6
+    return "HiBitrate" if mbps >= tier[0] else "LoBitrate" if mbps < tier[1] else ""
+
+
 def audio_tags(name, info, original_lang=None):
     """(audio format token, language tokens) for the release title. Languages come from the audio tracks when Webshare knows
     them, else from the name. The format is the best track in the original language, so a dub cannot win the audio score."""
@@ -714,7 +728,7 @@ def newznab():
                 lang = " ".join(langs)
             head = (f"{safe(tvmeta['title'])} S{episode_of[f['ident']][0]:02d}E{episode_of[f['ident']][1]:02d}"
                     if f["ident"] in episode_of else f"{safe(meta['Title'])} {year or ''}")
-            title = re.sub(r"\s+", " ", " ".join([head, res, *dict.fromkeys(src_tags), fmt, lang])).strip()
+            title = re.sub(r"\s+", " ", " ".join([head, res, *dict.fromkeys(src_tags), fmt, lang, bitrate_tag(info, f["size"], measured_resolution(info))])).strip()
         # a stable publish date per file: Radarr/Sonarr match a usenet blocklist entry by the exact publish date of the
         # grabbed release, so with "now" a blocklisted file was offered (and grabbed) again on the next search
         with _fileinfo_lock:
